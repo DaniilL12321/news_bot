@@ -17,7 +17,7 @@ export class NewsService {
     private telegramService: TelegramService,
   ) {}
 
-  @Cron('*/1 * * * *')
+  @Cron('*/10 * * * * *')
   async checkNews() {
     try {
       const response = await axios.get('https://nerehta-adm.ru/news');
@@ -112,11 +112,10 @@ export class NewsService {
         let text = description.html() || '';
 
         text = text
-          .replace(/<br\s*\/?>\s*<br\s*\/?>/g, '\n\n')
-          .replace(/<br\s*\/?>/g, '\n')
+          .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
+          .replace(/\n\s*\n/g, '\n\n')
           .replace(/<[^>]*>/g, '')
           .replace(/&nbsp;/g, ' ')
-          .replace(/\n\s*\n/g, '\n\n')
           .replace(/;\- /gm, '• \n')
           .replace(/;\-/gm, '• \n')
           .replace(/- /gm, '• ')
@@ -128,23 +127,21 @@ export class NewsService {
         const textContainers = description.find('p');
 
         textContainers.each((_, element) => {
-          let text = $(element)
-            .text()
+          let text = $(element).html() || '';
+          
+          text = text
+            .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
+            .replace(/\n\s*\n/g, '\n\n')
+            .replace(/<[^>]*>/g, '')
             .replace(/&nbsp;/g, ' ')
-            .replace(/\s+/g, ' ')
-            .replace(/<br\s*\/?>/g, '\n')
+            .replace(/,\s*\n/g, ', ')
+            .replace(/;\- /gm, '\n• ')
+            .replace(/;\-/gm, '\n• ')
+            .replace(/- /gm, '\n• ')
+            .replace(/^-/gm, '\n• ')
             .trim();
 
           if (text) {
-            text = text
-              .replace(/<br\s*\/?>/g, '\n')
-
-              .replace(/;\- /gm, '\n• ')
-              .replace(/;\-/gm, '\n• ')
-              .replace(/- /gm, '• ')
-              .replace(/^-/gm, '• ')
-              .trim();
-
             content += text + '\n\n';
           }
         });
