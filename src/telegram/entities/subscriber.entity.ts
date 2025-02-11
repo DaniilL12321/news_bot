@@ -8,6 +8,9 @@ export class Subscriber {
   @Column({ unique: true })
   telegram_id: number;
 
+  @Column('text', { array: true, default: [] })
+  categories: string[];
+
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;
 }

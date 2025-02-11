@@ -38,9 +38,9 @@ export class NewsService {
 
           const [day, month, year] = dateStr.split('.');
           const date = new Date(
-            parseInt(`20${year}`), 
-            parseInt(month) - 1, 
-            parseInt(day)
+            parseInt(`20${year}`),
+            parseInt(month) - 1,
+            parseInt(day),
           );
 
           if (isNaN(date.getTime())) {
@@ -72,8 +72,12 @@ export class NewsService {
                 content: newsContent,
               });
 
+              const category = this.telegramService.determineCategory(
+                item.title,
+              );
               await this.telegramService.notifySubscribers(
                 `🔔 Новая новость!\n\n${item.title}\n\n${newsContent}`,
+                category,
               );
             } catch (saveError: any) {
               if (saveError?.driverError?.code !== '23505') {
@@ -106,7 +110,7 @@ export class NewsService {
 
       if (description.children('p').length === 0) {
         let text = description.html() || '';
-        
+
         text = text
           .replace(/<br\s*\/?>\s*<br\s*\/?>/g, '\n\n')
           .replace(/<br\s*\/?>/g, '\n')
@@ -122,9 +126,10 @@ export class NewsService {
         content = text;
       } else {
         const textContainers = description.find('p');
-        
+
         textContainers.each((_, element) => {
-          let text = $(element).text()
+          let text = $(element)
+            .text()
             .replace(/&nbsp;/g, ' ')
             .replace(/\s+/g, ' ')
             .replace(/<br\s*\/?>/g, '\n')
@@ -145,11 +150,12 @@ export class NewsService {
         });
       }
 
-      const uniqueLines = content
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .join('\n\n') + `\n\n📎 Новость на оф.сайте: ${url}`;
+      const uniqueLines =
+        content
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
+          .join('\n\n') + `\n\n📎 Новость на оф.сайте: ${url}`;
 
       return uniqueLines;
     } catch (error) {
