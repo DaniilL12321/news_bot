@@ -36,30 +36,58 @@ export class NewsService {
 
           const external_id = parseInt(link.split('/').pop() || '0');
 
+          const [day, month, year] = dateStr.split('.');
+          const date = new Date(
+            parseInt(`20${year}`), 
+            parseInt(month) - 1, 
+            parseInt(day)
+          );
+
+          if (isNaN(date.getTime())) {
+            this.logger.warn(`Некорректная дата для новости: ${dateStr}`);
+            return null;
+          }
+
           return {
             external_id,
             title,
             link,
-            date: new Date(dateStr),
+            date,
           };
         })
         .get()
         .filter((item) => item !== null);
 
       for (const item of newsItems) {
-        const exists = await this.newsRepository.findOne({
-          where: { external_id: item.external_id },
-        });
-
-        if (!exists && item.link) {
-          const newsContent = await this.getNewsContent(item.link);
-          const news = await this.newsRepository.save({
-            ...item,
-            content: newsContent,
+        try {
+          const exists = await this.newsRepository.findOne({
+            where: { external_id: item.external_id },
           });
 
-          await this.telegramService.notifySubscribers(
-            `🔔 Новая новость!\n\n${item.title}\n\n${newsContent}`,
+          if (!exists && item.link) {
+            const newsContent = await this.getNewsContent(item.link);
+            try {
+              const news = await this.newsRepository.save({
+                ...item,
+                content: newsContent,
+              });
+
+              await this.telegramService.notifySubscribers(
+                `🔔 Новая новость!\n\n${item.title}\n\n${newsContent}`,
+              );
+            } catch (saveError: any) {
+              if (saveError?.driverError?.code !== '23505') {
+                throw saveError;
+              }
+              this.logger.debug(
+                `Новость с external_id ${item.external_id} уже существует`,
+              );
+            }
+          }
+        } catch (itemError) {
+          this.logger.error(
+            `Ошибка при обработке новости ${item.external_id}:`,
+            itemError,
           );
         }
       }
@@ -76,41 +104,52 @@ export class NewsService {
       const description = $('.description');
       let content = '';
 
-      const textContainers = description.find(
-        'p, .wall_text, .vkitShowMoreText__text--ULCyL',
-      );
-
-      textContainers.each((_, element) => {
-        let html = $(element).html() || '';
-
-        let text = html
+      if (description.children('p').length === 0) {
+        let text = description.html() || '';
+        
+        text = text
           .replace(/<br\s*\/?>\s*<br\s*\/?>/g, '\n\n')
-          .replace(/<br\s*\/?>/g, ' ')
-          .replace(/<div[^>]*>&nbsp;<\/div>/g, '\n')
+          .replace(/<br\s*\/?>/g, '\n')
           .replace(/<[^>]*>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/\n\s*\n/g, '\n\n')
+          .replace(/;\- /gm, '• \n')
+          .replace(/;\-/gm, '• \n')
+          .replace(/- /gm, '• ')
+          .replace(/^-/gm, '• ')
           .trim();
 
-        if (text && text !== '&nbsp;') {
-          text = text
+        content = text;
+      } else {
+        const textContainers = description.find('p');
+        
+        textContainers.each((_, element) => {
+          let text = $(element).text()
+            .replace(/&nbsp;/g, ' ')
             .replace(/\s+/g, ' ')
-            .replace(/(?<=[.!])\s+(?=[А-ЯA-Z])/g, '\n\n')
-            .replace(/^\s*[-—]\s*/gm, '• ')
+            .replace(/<br\s*\/?>/g, '\n')
             .trim();
 
           if (text) {
+            text = text
+              .replace(/<br\s*\/?>/g, '\n')
+
+              .replace(/;\- /gm, '\n• ')
+              .replace(/;\-/gm, '\n• ')
+              .replace(/- /gm, '• ')
+              .replace(/^-/gm, '• ')
+              .trim();
+
             content += text + '\n\n';
           }
-        }
-      });
+        });
+      }
 
-      const uniqueLines = [
-        ...new Set(
-          content
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0),
-        ),
-      ].join('\n\n');
+      const uniqueLines = content
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .join('\n\n') + `\n\n📎 Новость на оф.сайте: ${url}`;
 
       return uniqueLines;
     } catch (error) {
