@@ -17,7 +17,7 @@ export class NewsService {
     private telegramService: TelegramService,
   ) {}
 
-  @Cron('*/10 * * * * *')
+  @Cron('*/1 * * * *')
   async checkNews() {
     try {
       const response = await axios.get('https://nerehta-adm.ru/news');
