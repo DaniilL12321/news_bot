@@ -116,6 +116,7 @@ export class NewsService {
           .replace(/\n\s*\n/g, '\n\n')
           .replace(/<[^>]*>/g, '')
           .replace(/&nbsp;/g, ' ')
+          .replace(/,\s*\n/g, ', ')
           .replace(/;\- /gm, '• \n')
           .replace(/;\-/gm, '• \n')
           .replace(/- /gm, '• ')
