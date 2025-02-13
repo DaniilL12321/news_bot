@@ -13,6 +13,7 @@ export class TelegramService {
   private readonly categories = {
     power: 'Отключение электроснабжения',
     water: 'Отключение воды',
+    other: 'Прочие новости',
     all: 'Все новости',
   };
 
@@ -207,6 +208,6 @@ export class TelegramService {
     title = title.toLowerCase();
     if (title.includes('электроснабжен')) return 'power';
     if (title.includes('вода') || title.includes('водоснабжен')) return 'water';
-    return 'all';
+    return 'other';
   }
 }
