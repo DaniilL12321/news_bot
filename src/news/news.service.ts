@@ -66,6 +66,12 @@ export class NewsService {
 
           if (!exists && item.link) {
             const newsContent = await this.getNewsContent(item.link);
+            
+            const [mainContent, ...sections] = newsContent.split('\n\n📷 Изображения:\n');
+            const imageUrls = sections.length > 0 
+              ? sections[0].split('\n').filter(url => url.startsWith('http'))
+              : [];
+            
             try {
               const news = await this.newsRepository.save({
                 ...item,
@@ -75,10 +81,13 @@ export class NewsService {
               const category = this.telegramService.determineCategory(
                 item.title,
               );
-              await this.telegramService.notifySubscribers(
-                `🔔 Новая новость!\n\n${item.title}\n\n${newsContent}`,
+
+              await this.telegramService.notifySubscribersWithMedia(
+                `🔔 Новая новость!\n\n${item.title}\n\n${mainContent}\n\n📎 Новость на оф.сайте: ${item.link}`,
+                imageUrls,
                 category,
               );
+
             } catch (saveError: any) {
               if (saveError?.driverError?.code !== '23505') {
                 throw saveError;
@@ -104,6 +113,11 @@ export class NewsService {
     try {
       const response = await axios.get(url);
       const $ = cheerio.load(response.data);
+
+      const imageLinks = $('a[rel="images-gallery"]')
+        .map((_, element) => $(element).attr('href'))
+        .get()
+        .filter(link => link);
 
       const description = $('.description');
       let content = '';
@@ -153,9 +167,13 @@ export class NewsService {
           .split('\n')
           .map((line) => line.trim())
           .filter((line) => line.length > 0)
-          .join('\n\n') + `\n\n📎 Новость на оф.сайте: ${url}`;
+          .join('\n\n');
 
-      return uniqueLines;
+      const imagesSection = imageLinks.length > 0 
+        ? '\n\n📷 Изображения:\n' + imageLinks.join('\n')
+        : '';
+
+      return uniqueLines + imagesSection + `\n\n📎 Новость на оф.сайте: ${url}`;
     } catch (error) {
       this.logger.error(
         `Ошибка при получении содержания новости: ${url}`,
