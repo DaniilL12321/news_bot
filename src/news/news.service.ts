@@ -173,7 +173,7 @@ export class NewsService {
         ? '\n\n📷 Изображения:\n' + imageLinks.join('\n')
         : '';
 
-      return uniqueLines + imagesSection + `\n\n📎 Новость на оф.сайте: ${url}`;
+      return uniqueLines + imagesSection;
     } catch (error) {
       this.logger.error(
         `Ошибка при получении содержания новости: ${url}`,
