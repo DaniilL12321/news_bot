@@ -10,12 +10,47 @@ import { TelegramService } from '../telegram/telegram.service';
 @Injectable()
 export class NewsService {
   private readonly logger = new Logger(NewsService.name);
+  private readonly SUMMARY_API_URL = process.env.SUMMARY_API_URL || 'https://example.com/';
+  private readonly MAX_TELEGRAM_LENGTH = 1024;
 
   constructor(
     @InjectRepository(News)
     private newsRepository: Repository<News>,
     private telegramService: TelegramService,
   ) {}
+
+  private async getShortenedText(text: string): Promise<{ text: string; wasShortened: boolean }> {
+    if (text.length <= this.MAX_TELEGRAM_LENGTH) {
+      return {
+        text: text,
+        wasShortened: false
+      };
+    }
+
+    try {
+      const response = await axios.post(this.SUMMARY_API_URL, {
+        text: text
+      });
+      
+      if (response.data && response.data.summary) {
+        return { 
+          text: response.data.summary,
+          wasShortened: true 
+        };
+      }
+      
+      return { 
+        text: text,
+        wasShortened: false 
+      };
+    } catch (error) {
+      this.logger.error('Ошибка при сокращении текста:', error);
+      return { 
+        text: text,
+        wasShortened: false 
+      };
+    }
+  }
 
   @Cron('*/1 * * * *')
   async checkNews() {
@@ -82,8 +117,13 @@ export class NewsService {
                 item.title,
               );
 
+              const { text: shortenedContent, wasShortened } = await this.getShortenedText(mainContent);
+
+              const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
+              const message = `🔔 Новая новость!\n\n${item.title}\n\n${shortenedContent}${aiNote}\n\n📎 Новость на оф.сайте: ${item.link}`;
+
               await this.telegramService.notifySubscribersWithMedia(
-                `🔔 Новая новость!\n\n${item.title}\n\n${mainContent}\n\n📎 Новость на оф.сайте: ${item.link}`,
+                message,
                 imageUrls,
                 category,
               );
