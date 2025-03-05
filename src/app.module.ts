@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { NewsModule } from './news/news.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { TelegramModule } from './telegram/telegram.module';
     ScheduleModule.forRoot(),
     NewsModule,
     TelegramModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

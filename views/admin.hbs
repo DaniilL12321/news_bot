@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ-панель</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            100: '#1a1a1a',
+                            200: '#2d2d2d',
+                            300: '#404040',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 dark:bg-dark-100 min-h-screen transition-colors duration-200">
+    <div class="container mx-auto px-4 py-8">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Панель управления рассылкой</h1>
+            <button 
+                id="themeToggle"
+                class="p-2 rounded-lg bg-gray-200 dark:bg-dark-200 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-dark-300 transition-colors duration-200"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+            </button>
+        </div>
+        
+        <div class="bg-white dark:bg-dark-200 rounded-lg shadow p-6">
+            <form id="messageForm" class="space-y-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Текст сообщения
+                    </label>
+                    <textarea 
+                        id="message"
+                        rows="6"
+                        class="w-full px-3 py-2 bg-white dark:bg-dark-300 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                        required
+                    ></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Категория
+                    </label>
+                    <select 
+                        id="category"
+                        class="w-full px-3 py-2 bg-white dark:bg-dark-300 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                    >
+                        <option value="">Без категории</option>
+                        <option value="culture">Культура</option>
+                        <option value="sport">Спорт</option>
+                        <option value="education">Образование</option>
+                        <option value="health">Здравоохранение</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Ссылки на изображения (по одной на строку)
+                    </label>
+                    <textarea 
+                        id="imageUrls"
+                        rows="3"
+                        class="w-full px-3 py-2 bg-white dark:bg-dark-300 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white"
+                        placeholder="https://example.com/image1.jpg&#10;https://example.com/image2.jpg"
+                    ></textarea>
+                </div>
+
+                <button 
+                    type="submit"
+                    class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:ring-offset-dark-200 transition-colors duration-200"
+                >
+                    Отправить сообщение
+                </button>
+            </form>
+
+            <div id="status" class="mt-4 hidden">
+                <div class="success hidden text-green-600 dark:text-green-400 p-4 bg-green-50 dark:bg-green-900/20 rounded-md">
+                    Сообщение успешно отправлено!
+                </div>
+                <div class="error hidden text-red-600 dark:text-red-400 p-4 bg-red-50 dark:bg-red-900/20 rounded-md">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.className = theme;
+
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            const html = document.documentElement;
+            const currentTheme = html.className;
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            
+            html.className = newTheme;
+            localStorage.setItem('theme', newTheme);
+        });
+
+        document.getElementById('messageForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const statusEl = document.getElementById('status');
+            const successEl = statusEl.querySelector('.success');
+            const errorEl = statusEl.querySelector('.error');
+            
+            statusEl.classList.remove('hidden');
+            successEl.classList.add('hidden');
+            errorEl.classList.add('hidden');
+
+            const message = document.getElementById('message').value;
+            const category = document.getElementById('category').value;
+            const imageUrls = document.getElementById('imageUrls').value
+                .split('\n')
+                .map(url => url.trim())
+                .filter(url => url);
+
+            try {
+                const response = await fetch('/admin/send-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Admin-Token': new URLSearchParams(window.location.search).get('token')
+                    },
+                    body: JSON.stringify({
+                        message,
+                        category: category || undefined,
+                        imageUrls
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Ошибка при отправке сообщения');
+                }
+
+                successEl.classList.remove('hidden');
+                document.getElementById('messageForm').reset();
+            } catch (error) {
+                errorEl.textContent = error.message;
+                errorEl.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html> 
