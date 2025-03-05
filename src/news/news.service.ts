@@ -10,19 +10,25 @@ import { TelegramService } from '../telegram/telegram.service';
 @Injectable()
 export class NewsService {
   private readonly logger = new Logger(NewsService.name);
-  private readonly SUMMARY_API_URL = process.env.SUMMARY_API_URL || 'https://example.com/';
+  private readonly SUMMARY_API_URL = process.env.SUMMARY_API_URL;
   private readonly MAX_TELEGRAM_LENGTH = 1024;
 
   constructor(
     @InjectRepository(News)
     private newsRepository: Repository<News>,
     private telegramService: TelegramService,
-  ) {}
+  ) {
+    if (!this.SUMMARY_API_URL) {
+      this.logger.warn('SUMMARY_API_URL не задан в конфигурации');
+    }
+  }
 
   private async getShortenedText(text: string): Promise<{ text: string; wasShortened: boolean }> {
-    if (text.length <= this.MAX_TELEGRAM_LENGTH) {
+    if (text.length <= this.MAX_TELEGRAM_LENGTH || !this.SUMMARY_API_URL) {
       return {
-        text: text,
+        text: text.length > this.MAX_TELEGRAM_LENGTH ? 
+          text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...' : 
+          text,
         wasShortened: false
       };
     }
