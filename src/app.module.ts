@@ -22,7 +22,7 @@ import { AdminModule } from './admin/admin.module';
         rejectUnauthorized: false,
       },
       extra: {
-        ssl: true,
+        ssl: false,
       },
     }),
     ScheduleModule.forRoot(),
