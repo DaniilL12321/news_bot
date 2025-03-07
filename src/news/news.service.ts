@@ -128,11 +128,15 @@ export class NewsService {
               const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
               const message = `🔔 Новая новость!\n\n${item.title}\n\n${shortenedContent}${aiNote}\n\n📎 Новость на оф.сайте: ${item.link}`;
 
+              this.logger.log(`Отправка новости "${item.title}" подписчикам. Категория: ${category}`);
+              
               await this.telegramService.notifySubscribersWithMedia(
                 message,
                 imageUrls,
                 category,
               );
+
+              this.logger.log(`Новость успешно отправлена подписчикам: ${item.title}`);
 
             } catch (saveError: any) {
               if (saveError?.driverError?.code !== '23505') {
