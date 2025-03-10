@@ -6,6 +6,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { News } from './entities/news.entity';
 import { TelegramService } from '../telegram/telegram.service';
+import { BackupService } from '../backup/backup.service';
 
 @Injectable()
 export class NewsService {
@@ -17,6 +18,7 @@ export class NewsService {
     @InjectRepository(News)
     private newsRepository: Repository<News>,
     private telegramService: TelegramService,
+    private backupService: BackupService,
   ) {
     if (!this.SUMMARY_API_URL) {
       this.logger.warn('SUMMARY_API_URL не задан в конфигурации');
@@ -118,6 +120,9 @@ export class NewsService {
                 ...item,
                 content: newsContent,
               });
+
+              // Создаем бэкап после успешного сохранения новости
+              await this.backupService.createBackup();
 
               const category = this.telegramService.determineCategory(
                 item.title,

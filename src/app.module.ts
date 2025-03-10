@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { NewsModule } from './news/news.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { AdminModule } from './admin/admin.module';
+import { BackupService } from './backup/backup.service';
 
 @Module({
   imports: [
@@ -29,6 +30,9 @@ import { AdminModule } from './admin/admin.module';
     NewsModule,
     TelegramModule,
     AdminModule,
+  ],
+  providers: [
+    BackupService,
   ],
 })
 export class AppModule {}
