@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { Telegraf, Markup } from 'telegraf';
 import { Subscriber } from './entities/subscriber.entity';
 import { InputMediaPhoto } from 'telegraf/types';
+import { News } from '../news/entities/news.entity';
+import { Reaction } from '../news/entities/reaction.entity';
 
 @Injectable()
 export class TelegramService {
@@ -17,9 +19,20 @@ export class TelegramService {
     all: 'Все новости',
   };
 
+  private readonly reactions = {
+    '👍': 'like',
+    '👎': 'dislike',
+    '❤️': 'love',
+    '😡': 'angry',
+  };
+
   constructor(
     @InjectRepository(Subscriber)
     private subscriberRepository: Repository<Subscriber>,
+    @InjectRepository(News)
+    private newsRepository: Repository<News>,
+    @InjectRepository(Reaction)
+    private reactionRepository: Repository<Reaction>,
   ) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) {
@@ -43,6 +56,50 @@ export class TelegramService {
       const emoji = isSubscribed ? '✅' : '❌';
       return Markup.button.callback(`${emoji} ${name}`, `toggle_${key}`);
     });
+  }
+
+  private async getReactionButtons(newsId: number, userId: number) {
+    const reactions = await this.reactionRepository.find({
+      where: { news: { id: newsId } },
+      relations: ['news'],
+    });
+
+    const userReaction = reactions.find(r => r.telegram_id === userId);
+    
+    return Object.entries(this.reactions).map(([emoji, type]) => {
+      const count = reactions.filter(r => r.reaction_type === type).length;
+      const isSelected = userReaction?.reaction_type === type;
+      return Markup.button.callback(
+        `${emoji} ${count}${isSelected ? ' ✓' : ''}`,
+        `react_${newsId}_${type}`
+      );
+    });
+  }
+
+  private async handleReaction(newsId: number, userId: number, reactionType: string) {
+    const news = await this.newsRepository.findOne({ where: { id: newsId } });
+    if (!news) return;
+
+    let reaction = await this.reactionRepository.findOne({
+      where: { news: { id: newsId }, telegram_id: userId },
+      relations: ['news'],
+    });
+
+    if (reaction) {
+      if (reaction.reaction_type === reactionType) {
+        await this.reactionRepository.remove(reaction);
+      } else {
+        reaction.reaction_type = reactionType;
+        await this.reactionRepository.save(reaction);
+      }
+    } else {
+      reaction = this.reactionRepository.create({
+        news,
+        telegram_id: userId,
+        reaction_type: reactionType,
+      });
+      await this.reactionRepository.save(reaction);
+    }
   }
 
   private initializeBot() {
@@ -141,6 +198,19 @@ export class TelegramService {
       await ctx.reply(aboutMessage);
     });
 
+    this.bot.action(/react_(\d+)_(.+)/, async (ctx) => {
+      const newsId = parseInt(ctx.match[1]);
+      const reactionType = ctx.match[2];
+      const userId = ctx.from.id;
+
+      await this.handleReaction(newsId, userId, reactionType);
+      const buttons = await this.getReactionButtons(newsId, userId);
+      
+      await ctx.editMessageReplyMarkup({
+        inline_keyboard: [buttons],
+      });
+    });
+
     this.bot.launch();
   }
 
@@ -168,16 +238,23 @@ export class TelegramService {
     text: string,
     imageUrls: string[],
     category?: string,
+    newsId?: number,
   ): Promise<void> {
     const subscribers = await this.getSubscribers(category);
 
     for (const chatId of subscribers) {
       try {
+        const reactionButtons = newsId ? await this.getReactionButtons(newsId, chatId) : [];
+        const keyboard = reactionButtons.length > 0 ? 
+          { reply_markup: { inline_keyboard: [reactionButtons] } } : 
+          {};
+
         if (imageUrls.length === 0) {
-          await this.bot.telegram.sendMessage(chatId, text);
+          await this.bot.telegram.sendMessage(chatId, text, keyboard);
         } else if (imageUrls.length === 1) {
           await this.bot.telegram.sendPhoto(chatId, imageUrls[0], {
             caption: text,
+            ...keyboard,
           });
         } else {
           const media: InputMediaPhoto[] = imageUrls.map((url, index) => ({
@@ -186,13 +263,13 @@ export class TelegramService {
             caption: index === 0 ? text : undefined,
           }));
 
-          await this.bot.telegram.sendMediaGroup(chatId, media);
+          const message = await this.bot.telegram.sendMediaGroup(chatId, media);
+          if (reactionButtons.length > 0 && message && message[0]) {
+            await this.bot.telegram.sendMessage(chatId, '🔽 Реакции:', keyboard);
+          }
         }
       } catch (error) {
-        this.logger.error(
-          `Ошибка при отправке сообщения в чат ${chatId}:`,
-          error,
-        );
+        this.logger.error(`Ошибка при отправке сообщения в чат ${chatId}:`, error);
       }
     }
   }

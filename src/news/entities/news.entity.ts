@@ -1,4 +1,5 @@
-import { Entity, Column, PrimaryGeneratedColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, OneToMany } from 'typeorm';
+import { Reaction } from './reaction.entity';
 
 @Entity('news')
 export class News {
@@ -22,4 +23,7 @@ export class News {
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;
+
+  @OneToMany(() => Reaction, reaction => reaction.news)
+  reactions: Reaction[];
 }

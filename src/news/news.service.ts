@@ -121,7 +121,6 @@ export class NewsService {
                 content: newsContent,
               });
 
-              // Создаем бэкап после успешного сохранения новости
               await this.backupService.createBackup();
 
               const category = this.telegramService.determineCategory(
@@ -139,6 +138,7 @@ export class NewsService {
                 message,
                 imageUrls,
                 category,
+                news.id
               );
 
               this.logger.log(`Новость успешно отправлена подписчикам: ${item.title}`);
