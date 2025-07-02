@@ -1,20 +1,41 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Telegraf, Markup } from 'telegraf';
+import { Telegraf, Markup, Context } from 'telegraf';
 import { Subscriber } from './entities/subscriber.entity';
-import { InputMediaPhoto } from 'telegraf/types';
+import { InputMediaPhoto, Message } from 'telegraf/types';
 import { News } from '../news/entities/news.entity';
 import { Reaction } from '../news/entities/reaction.entity';
+import axios from 'axios';
+
+interface NominatimAddress {
+  road?: string;
+  house_number?: string;
+  suburb?: string;
+  neighbourhood?: string;
+  residential?: string;
+  city?: string;
+  town?: string;
+  village?: string;
+  [key: string]: string | undefined;
+}
+
+interface NominatimResponse {
+  address: NominatimAddress;
+}
 
 @Injectable()
 export class TelegramService {
   private bot: Telegraf;
   private readonly logger = new Logger(TelegramService.name);
+  private lastMenuMessageId: { [key: number]: number } = {};
+  private userMessageIds: { [key: number]: number[] } = {};
+  private lastNominatimRequest: number = 0;
 
   private readonly categories = {
     power: 'Отключение электроснабжения',
     water: 'Отключение воды',
+    events: 'Мероприятия',
     other: 'Прочие новости',
     all: 'Все новости',
   };
@@ -44,6 +65,89 @@ export class TelegramService {
     this.initializeBot();
   }
 
+  private async trackUserMessage(ctx: Context) {
+    const chatId = ctx.chat?.id;
+    const messageId = ctx.message?.message_id;
+    
+    if (chatId && messageId) {
+      if (!this.userMessageIds[chatId]) {
+        this.userMessageIds[chatId] = [];
+      }
+      this.userMessageIds[chatId].push(messageId);
+    }
+  }
+
+  private async cleanupUserMessages(ctx: Context) {
+    const chatId = ctx.chat?.id;
+    if (!chatId || !this.userMessageIds[chatId]) return;
+
+    for (const messageId of this.userMessageIds[chatId]) {
+      try {
+        await ctx.telegram.deleteMessage(chatId, messageId);
+      } catch (error) {
+        this.logger.warn(`Не удалось удалить сообщение ${messageId}`);
+      }
+    }
+    this.userMessageIds[chatId] = [];
+  }
+
+  private async updateMenuMessage(ctx: Context, text: string, keyboard: any) {
+    try {
+      const chatId = ctx.chat?.id;
+      if (!chatId) return;
+
+      await this.cleanupUserMessages(ctx);
+
+      if (this.lastMenuMessageId[chatId]) {
+        try {
+          await ctx.telegram.editMessageText(
+            chatId,
+            this.lastMenuMessageId[chatId],
+            undefined,
+            text,
+            keyboard
+          );
+          return;
+        } catch (error) {
+          this.logger.warn('Не удалось отредактировать сообщение, отправляем новое');
+        }
+      }
+
+      const message = await ctx.reply(text, keyboard);
+      this.lastMenuMessageId[chatId] = message.message_id;
+    } catch (error) {
+      this.logger.error('Ошибка при обновлении сообщения меню:', error);
+    }
+  }
+
+  private getMainMenuButtons() {
+    return [
+      [Markup.button.callback('📱 Категории новостей', 'categories')],
+      [Markup.button.callback('📍 Настройка адреса', 'location_settings')],
+    ];
+  }
+
+  private async getLocationSettingsText(telegram_id: number): Promise<string> {
+    const subscriber = await this.subscriberRepository.findOne({
+      where: { telegram_id },
+    });
+
+    let text = '📍 Настройка местоположения\n\n';
+    
+    if (subscriber?.address) {
+      text += '📌 Ваш текущий адрес:\n';
+      text += `${subscriber.address}\n\n`;
+    } else {
+      text += '❗️ У вас пока не указан адрес\n\n';
+    }
+
+    text += 'Выберите способ указания местоположения:\n\n' +
+            '• Отправить геолокацию - поделитесь своим текущим местоположением\n' +
+            '• Ввести адрес - укажите адрес вручную (например: "ул. Ленина, 10")';
+
+    return text;
+  }
+
   private async getCategoryButtons(telegram_id: number) {
     const subscriber = await this.subscriberRepository.findOne({
       where: { telegram_id },
@@ -56,6 +160,16 @@ export class TelegramService {
       const emoji = isSubscribed ? '✅' : '❌';
       return Markup.button.callback(`${emoji} ${name}`, `toggle_${key}`);
     });
+  }
+
+  private getLocationButtons() {
+    return [
+      [
+        Markup.button.callback('📍 Отправить геолокацию', 'send_location'),
+        Markup.button.callback('✏️ Ввести адрес', 'enter_address'),
+      ],
+      [Markup.button.callback('« Назад в меню', 'back_to_menu')],
+    ];
   }
 
   private async getReactionButtons(newsId: number, userId: number) {
@@ -102,6 +216,62 @@ export class TelegramService {
     }
   }
 
+  private async getAddressFromCoordinates(latitude: number, longitude: number): Promise<string> {
+    try {
+      const now = Date.now();
+      const timeSinceLastRequest = now - this.lastNominatimRequest;
+      if (timeSinceLastRequest < 1000) {
+        await new Promise(resolve => setTimeout(resolve, 1000 - timeSinceLastRequest));
+      }
+      this.lastNominatimRequest = Date.now();
+
+      const response = await axios.get<NominatimResponse>(
+        `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&accept-language=ru`,
+        {
+          headers: {
+            'User-Agent': 'TelegramNewsBot/1.0'
+          }
+        }
+      );
+
+      const address = response.data.address;
+      const components: string[] = [];
+
+      if (address.road) {
+        const streetType = address.road.toLowerCase().startsWith('улица') ? '' : 'ул. ';
+        components.push(streetType + address.road);
+      }
+
+      if (address.house_number) {
+        components.push(address.house_number);
+      }
+
+      if (components.length === 0) {
+        if (address.suburb) components.push(address.suburb);
+        else if (address.neighbourhood) components.push(address.neighbourhood);
+        else if (address.residential) components.push(address.residential);
+        else if (address.city) components.push(address.city);
+        else if (address.town) components.push(address.town);
+        else if (address.village) components.push(address.village);
+      }
+
+      if (address.city && !components.some(c => c.includes(address.city!))) {
+        components.push(address.city);
+      } else if (address.town && !components.some(c => c.includes(address.town!))) {
+        components.push(address.town);
+      } else if (address.village && !components.some(c => c.includes(address.village!))) {
+        components.push(address.village);
+      }
+
+      return components.length > 0 
+        ? components.join(', ')
+        : `${latitude}, ${longitude}`;
+    } catch (error) {
+      this.logger.error('Ошибка при получении адреса:', error);
+      return `${latitude}, ${longitude}`;
+    }
+  }
+
   private initializeBot() {
     this.bot.command('start', async (ctx) => {
       const welcomeMessage =
@@ -117,12 +287,129 @@ export class TelegramService {
     });
 
     this.bot.command('subscribe', async (ctx) => {
-      const buttons = await this.getCategoryButtons(ctx.from.id);
-
-      await ctx.reply(
-        'Управление подписками на категории новостей:\n✅ - включено, ❌ - выключено',
-        Markup.inlineKeyboard(buttons, { columns: 1 }),
+      await this.updateMenuMessage(
+        ctx,
+        '🔔 Меню управления подписками',
+        Markup.inlineKeyboard(this.getMainMenuButtons())
       );
+    });
+
+    this.bot.action('categories', async (ctx) => {
+      const buttons = await this.getCategoryButtons(ctx.from.id);
+      await ctx.editMessageText(
+        'Управление подписками на категории новостей:\n✅ - включено, ❌ - выключено',
+        Markup.inlineKeyboard(buttons, { columns: 1 })
+      );
+    });
+
+    this.bot.action('location_settings', async (ctx) => {
+      const text = await this.getLocationSettingsText(ctx.from.id);
+      await ctx.editMessageText(
+        text,
+        Markup.inlineKeyboard(this.getLocationButtons())
+      );
+    });
+
+    this.bot.action('send_location', async (ctx) => {
+      await ctx.editMessageText(
+        '📍 Отправка геолокации\n\n' +
+        'Чтобы отправить свое местоположение:\n' +
+        '1. Нажмите на значок 📎 (вложение)\n' +
+        '2. Выберите "Геопозиция"\n' +
+        '3. Отправьте свое текущее местоположение\n\n' +
+        'Или вернитесь назад для выбора другого способа.',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('« Назад к выбору способа', 'location_settings')]
+        ])
+      );
+    });
+
+    this.bot.action('enter_address', async (ctx) => {
+      const telegram_id = ctx.from.id;
+      let subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+      
+      if (!subscriber) {
+        subscriber = this.subscriberRepository.create({
+          telegram_id,
+          categories: [],
+        });
+      }
+      
+      subscriber.waitingForAddress = true;
+      await this.subscriberRepository.save(subscriber);
+
+      await ctx.editMessageText(
+        '✏️ Ввод адреса\n\n' +
+        'Пожалуйста, напишите ваш адрес в свободной форме.\n' +
+        'Например: "ул. Ленина, 10" или "Красная площадь"\n\n' +
+        'После ввода адреса я автоматически сохраню его.',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('« Назад к выбору способа', 'location_settings')]
+        ])
+      );
+    });
+
+    this.bot.action('back_to_menu', async (ctx) => {
+      await ctx.editMessageText(
+        '🔔 Меню управления подписками',
+        Markup.inlineKeyboard(this.getMainMenuButtons())
+      );
+    });
+
+    this.bot.on('location', async (ctx) => {
+      await this.trackUserMessage(ctx);
+      
+      const { latitude, longitude } = ctx.message.location;
+      const telegram_id = ctx.from.id;
+      let subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+
+      if (!subscriber) {
+        subscriber = this.subscriberRepository.create({
+          telegram_id,
+          categories: [],
+        });
+      }
+
+      const address = await this.getAddressFromCoordinates(latitude, longitude);
+
+      subscriber.latitude = latitude;
+      subscriber.longitude = longitude;
+      subscriber.address = address;
+      subscriber.waitingForAddress = false;
+      await this.subscriberRepository.save(subscriber);
+
+      await this.updateMenuMessage(
+        ctx,
+        `✅ Адрес успешно сохранен!\n\n📍 Ваш адрес:\n${address}\n\nТеперь вы будете получать уведомления о событиях поблизости.`,
+        Markup.inlineKeyboard(this.getMainMenuButtons())
+      );
+    });
+
+    this.bot.on('text', async (ctx) => {
+      await this.trackUserMessage(ctx);
+      
+      const telegram_id = ctx.from.id;
+      const subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+
+      if (subscriber?.waitingForAddress) {
+        const address = ctx.message.text;
+        
+        subscriber.address = address;
+        subscriber.waitingForAddress = false;
+        await this.subscriberRepository.save(subscriber);
+
+        await this.updateMenuMessage(
+          ctx,
+          `✅ Адрес "${address}" успешно сохранен!\n\nТеперь вы будете получать уведомления о событиях поблизости.`,
+          Markup.inlineKeyboard(this.getMainMenuButtons())
+        );
+      }
     });
 
     this.bot.action(/toggle_(.+)/, async (ctx) => {
@@ -214,45 +501,46 @@ export class TelegramService {
     this.bot.launch();
   }
 
-  async notifySubscribers(message: string, category: string = 'all') {
-    const subscribers = await this.subscriberRepository.find();
-
-    for (const subscriber of subscribers) {
-      try {
-        if (
-          subscriber.categories.includes(category) ||
-          subscriber.categories.includes('all')
-        ) {
-          await this.bot.telegram.sendMessage(subscriber.telegram_id, message);
-        }
-      } catch (error) {
-        this.logger.error(
-          `Ошибка при отправке сообщения подписчику ${subscriber.telegram_id}:`,
-          error,
-        );
-      }
-    }
+  private isNewsRelevantToLocation(newsText: string, subscriberAddress: string): boolean {
+    if (!subscriberAddress) return true;
+    
+    const normalizedNews = newsText.toLowerCase();
+    const normalizedAddress = subscriberAddress.toLowerCase();
+    
+    const addressParts = normalizedAddress.split(/[,\s]+/);
+    
+    return addressParts.some(part => 
+      part.length > 3 && normalizedNews.includes(part)
+    );
   }
 
   async notifySubscribersWithMedia(
     text: string,
     imageUrls: string[],
-    category?: string,
+    category: string = 'other',
     newsId?: number,
   ): Promise<void> {
-    const subscribers = await this.getSubscribers(category);
+    const subscribers = await this.subscriberRepository.find();
 
-    for (const chatId of subscribers) {
+    for (const subscriber of subscribers) {
       try {
-        const reactionButtons = newsId ? await this.getReactionButtons(newsId, chatId) : [];
+        if (!subscriber.categories.includes(category) && !subscriber.categories.includes('all')) {
+          continue;
+        }
+
+        if (subscriber.address && !this.isNewsRelevantToLocation(text, subscriber.address)) {
+          continue;
+        }
+
+        const reactionButtons = newsId ? await this.getReactionButtons(newsId, subscriber.telegram_id) : [];
         const keyboard = reactionButtons.length > 0 ? 
           { reply_markup: { inline_keyboard: [reactionButtons] } } : 
           {};
 
         if (imageUrls.length === 0) {
-          await this.bot.telegram.sendMessage(chatId, text, keyboard);
+          await this.bot.telegram.sendMessage(subscriber.telegram_id, text, keyboard);
         } else if (imageUrls.length === 1) {
-          await this.bot.telegram.sendPhoto(chatId, imageUrls[0], {
+          await this.bot.telegram.sendPhoto(subscriber.telegram_id, imageUrls[0], {
             caption: text,
             ...keyboard,
           });
@@ -263,22 +551,15 @@ export class TelegramService {
             caption: index === 0 ? text : undefined,
           }));
 
-          const message = await this.bot.telegram.sendMediaGroup(chatId, media);
+          const message = await this.bot.telegram.sendMediaGroup(subscriber.telegram_id, media);
           if (reactionButtons.length > 0 && message && message[0]) {
-            await this.bot.telegram.sendMessage(chatId, '🔽 Реакции:', keyboard);
+            await this.bot.telegram.sendMessage(subscriber.telegram_id, '🔽 Реакции:', keyboard);
           }
         }
       } catch (error) {
-        this.logger.error(`Ошибка при отправке сообщения в чат ${chatId}:`, error);
+        this.logger.error(`Ошибка при отправке сообщения в чат ${subscriber.telegram_id}:`, error);
       }
     }
-  }
-
-  private async getSubscribers(category: string = 'all'): Promise<number[]> {
-    const subscribers = await this.subscriberRepository.find();
-    return subscribers
-      .filter(sub => sub.categories.includes(category) || sub.categories.includes('all'))
-      .map(sub => sub.telegram_id);
   }
 
   determineCategory(title: string): string {
