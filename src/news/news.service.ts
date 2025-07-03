@@ -25,8 +25,18 @@ export class NewsService {
     }
   }
 
-  private async getShortenedText(text: string): Promise<{ text: string; wasShortened: boolean }> {
-    if (text.length <= this.MAX_TELEGRAM_LENGTH || !this.SUMMARY_API_URL) {
+  private prepareHtmlForJson(html: string): string {
+    return html
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/\f/g, '\\f');
+  }
+
+  private async getShortenedText(text: string, isHtml: boolean = false): Promise<{ text: string; wasShortened: boolean }> {
+    if (!this.SUMMARY_API_URL) {
       return {
         text: text.length > this.MAX_TELEGRAM_LENGTH ? 
           text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...' : 
@@ -36,8 +46,9 @@ export class NewsService {
     }
 
     try {
+      const jsonText = isHtml ? this.prepareHtmlForJson(text) : text;
       const response = await axios.post(this.SUMMARY_API_URL, {
-        text: text
+        text: jsonText
       });
       
       if (response.data && response.data.summary) {
@@ -57,6 +68,92 @@ export class NewsService {
         text: text,
         wasShortened: false 
       };
+    }
+  }
+
+  private formatRegularContent(description: cheerio.Cheerio<any>): string {
+    let content = '';
+
+    if (description.children('p').length === 0) {
+      let text = description.html() || '';
+
+      text = text
+        .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
+        .replace(/\n\s*\n/g, '\n\n')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/,\s*\n/g, ', ')
+        .replace(/;\- /gm, '• \n')
+        .replace(/;\-/gm, '• \n')
+        .replace(/- /gm, '• ')
+        .replace(/^-/gm, '• ')
+        .trim();
+
+      content = text;
+    } else {
+      const textContainers = description.find('p');
+
+      textContainers.each((_, element) => {
+        let text = cheerio.load(element).html() || '';
+        
+        text = text
+          .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
+          .replace(/\n\s*\n/g, '\n\n')
+          .replace(/<[^>]*>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/,\s*\n/g, ', ')
+          .replace(/;\- /gm, '\n• ')
+          .replace(/;\-/gm, '\n• ')
+          .replace(/- /gm, '\n• ')
+          .replace(/^-/gm, '\n• ')
+          .trim();
+
+        if (text) {
+          content += text + '\n\n';
+        }
+      });
+    }
+
+    return content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .join('\n\n');
+  }
+
+  private isUtilityNews(title: string): boolean {
+    const lowerTitle = title.toLowerCase();
+    return lowerTitle.includes('электроснабжен') || 
+           lowerTitle.includes('вода') || 
+           lowerTitle.includes('водоснабжен');
+  }
+
+  private async getNewsContent(url: string, title: string): Promise<{ content: string; rawHtml: string; imageUrls: string[] }> {
+    try {
+      const response = await axios.get(url);
+      const $ = cheerio.load(response.data);
+      const description = $('.description');
+      
+      const imageUrls = $('a[rel="images-gallery"]')
+        .map((_, element) => $(element).attr('href'))
+        .get()
+        .filter(link => link);
+
+      const isUtility = this.isUtilityNews(title);
+      const content = isUtility ? description.text() : this.formatRegularContent(description);
+      const rawHtml = isUtility ? description.html() : content;
+
+      return {
+        content,
+        rawHtml: rawHtml || '',
+        imageUrls
+      };
+    } catch (error) {
+      this.logger.error(
+        `Ошибка при получении содержания новости: ${url}`,
+        error,
+      );
+      return { content: '', rawHtml: '', imageUrls: [] };
     }
   }
 
@@ -108,29 +205,27 @@ export class NewsService {
           });
 
           if (!exists && item.link) {
-            const newsContent = await this.getNewsContent(item.link);
-            
-            const [mainContent, ...sections] = newsContent.split('\n\n📷 Изображения:\n');
-            const imageUrls = sections.length > 0 
-              ? sections[0].split('\n').filter(url => url.startsWith('http'))
-              : [];
+            const { content, rawHtml, imageUrls } = await this.getNewsContent(item.link, item.title);
             
             try {
               const news = await this.newsRepository.save({
                 ...item,
-                content: newsContent,
+                content: content + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : ''),
               });
 
               await this.backupService.createBackup();
 
-              const category = this.telegramService.determineCategory(
-                item.title,
+              const category = this.determineCategory(item.title);
+              const isUtility = this.isUtilityNews(item.title);
+
+              const { text: shortenedContent, wasShortened } = await this.getShortenedText(
+                isUtility ? rawHtml : content,
+                isUtility
               );
 
-              const { text: shortenedContent, wasShortened } = await this.getShortenedText(mainContent);
-
               const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
-              const message = `🔔 Новая новость!\n\n${item.title}\n\n${shortenedContent}${aiNote}\n\n📎 Новость на оф.сайте: ${item.link}`;
+              const imagesSection = imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '';
+              const message = `🔔 Новая новость!\n\n${item.title}\n\n${shortenedContent}${aiNote}${imagesSection}\n\n📎 Новость на оф.сайте: ${item.link}`;
 
               this.logger.log(`Отправка новости "${item.title}" подписчикам. Категория: ${category}`);
               
@@ -164,77 +259,17 @@ export class NewsService {
     }
   }
 
-  private async getNewsContent(url: string): Promise<string> {
-    try {
-      const response = await axios.get(url);
-      const $ = cheerio.load(response.data);
-
-      const imageLinks = $('a[rel="images-gallery"]')
-        .map((_, element) => $(element).attr('href'))
-        .get()
-        .filter(link => link);
-
-      const description = $('.description');
-      let content = '';
-
-      if (description.children('p').length === 0) {
-        let text = description.html() || '';
-
-        text = text
-          .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
-          .replace(/\n\s*\n/g, '\n\n')
-          .replace(/<[^>]*>/g, '')
-          .replace(/&nbsp;/g, ' ')
-          .replace(/,\s*\n/g, ', ')
-          .replace(/;\- /gm, '• \n')
-          .replace(/;\-/gm, '• \n')
-          .replace(/- /gm, '• ')
-          .replace(/^-/gm, '• ')
-          .trim();
-
-        content = text;
-      } else {
-        const textContainers = description.find('p');
-
-        textContainers.each((_, element) => {
-          let text = $(element).html() || '';
-          
-          text = text
-            .replace(/<br\s*\/?>|<BR\s*\/?>/gi, '\n')
-            .replace(/\n\s*\n/g, '\n\n')
-            .replace(/<[^>]*>/g, '')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/,\s*\n/g, ', ')
-            .replace(/;\- /gm, '\n• ')
-            .replace(/;\-/gm, '\n• ')
-            .replace(/- /gm, '\n• ')
-            .replace(/^-/gm, '\n• ')
-            .trim();
-
-          if (text) {
-            content += text + '\n\n';
-          }
-        });
-      }
-
-      const uniqueLines =
-        content
-          .split('\n')
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0)
-          .join('\n\n');
-
-      const imagesSection = imageLinks.length > 0 
-        ? '\n\n📷 Изображения:\n' + imageLinks.join('\n')
-        : '';
-
-      return uniqueLines + imagesSection;
-    } catch (error) {
-      this.logger.error(
-        `Ошибка при получении содержания новости: ${url}`,
-        error,
-      );
-      return '';
+  private determineCategory(title: string): string {
+    const lowerTitle = title.toLowerCase();
+    
+    if (lowerTitle.includes('электроснабжен')) {
+      return 'power';
     }
+    
+    if (lowerTitle.includes('вода') || lowerTitle.includes('водоснабжен')) {
+      return 'water';
+    }
+    
+    return 'general';
   }
 }
