@@ -26,7 +26,23 @@ export class NewsService {
   }
 
   private prepareHtmlForJson(html: string): string {
-    return html
+    let cleanHtml = html
+      .replace(/\s+class="[^"]*"/g, '')
+      .replace(/\s+id="[^"]*"/g, '')
+      .replace(/\s+data-[^=]*="[^"]*"/g, '')
+      .replace(/<div[^>]*>/g, '<div>')
+      .replace(/\s+style="[^"]*"/g, '')
+      .replace(/\s+title="[^"]*"/g, '')
+      .replace(/\s+tabindex="[^"]*"/g, '')
+      .replace(/\s+href="[^"]*"/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ');
+
+    cleanHtml = cleanHtml
+      .replace(/<div>\s*<\/div>/g, '')
+      .replace(/<div>\s*<br>\s*<\/div>/g, '<br>');
+
+    return cleanHtml
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
       .replace(/\n/g, '\\n')
@@ -36,7 +52,7 @@ export class NewsService {
   }
 
   private async getShortenedText(text: string, isHtml: boolean = false): Promise<{ text: string; wasShortened: boolean }> {
-    if (!this.SUMMARY_API_URL) {
+    if (!this.SUMMARY_API_URL || !isHtml) {
       return {
         text: text.length > this.MAX_TELEGRAM_LENGTH ? 
           text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...' : 
@@ -46,7 +62,8 @@ export class NewsService {
     }
 
     try {
-      const jsonText = isHtml ? this.prepareHtmlForJson(text) : text;
+      const jsonText = this.prepareHtmlForJson(text);
+      console.log(jsonText);
       const response = await axios.post(this.SUMMARY_API_URL, {
         text: jsonText
       });
@@ -125,7 +142,9 @@ export class NewsService {
     const lowerTitle = title.toLowerCase();
     return lowerTitle.includes('электроснабжен') || 
            lowerTitle.includes('вода') || 
-           lowerTitle.includes('водоснабжен');
+           lowerTitle.includes('водоснабжен') ||
+           lowerTitle.includes('отключени') ||
+           lowerTitle.includes('об отключени');
   }
 
   private async getNewsContent(url: string, title: string): Promise<{ content: string; rawHtml: string; imageUrls: string[] }> {
@@ -271,5 +290,105 @@ export class NewsService {
     }
     
     return 'general';
+  }
+
+  async fetchAllHistoricalNews(startPage: number = 1, endPage: number = 163) {
+    this.logger.log(`Начинаю сбор исторических новостей со страницы ${startPage} по ${endPage}`);
+    
+    for (let page = startPage; page <= endPage; page++) {
+      try {
+        const url = `https://nerehta-adm.ru/news/index/MNews_page/${page}`;
+        this.logger.log(`Обработка страницы ${page}: ${url}`);
+        
+        const response = await axios.get(url);
+        const $ = cheerio.load(response.data);
+
+        const newsItems = $('.list-item')
+          .map((_, element) => {
+            const linkElement = $(element).find('.caption a.item');
+            const link = linkElement.attr('href');
+            const title = linkElement.text().replace(/\s+/g, ' ').trim();
+            const dateStr = $(element).find('.date').text().trim();
+
+            if (!link) {
+              return null;
+            }
+
+            const external_id = parseInt(link.split('/').pop() || '0');
+
+            const [day, month, year] = dateStr.split('.');
+            const date = new Date(
+              parseInt(`20${year}`),
+              parseInt(month) - 1,
+              parseInt(day),
+            );
+
+            if (isNaN(date.getTime())) {
+              this.logger.warn(`Некорректная дата для новости: ${dateStr}`);
+              return null;
+            }
+
+            return {
+              external_id,
+              title,
+              link,
+              date,
+            };
+          })
+          .get()
+          .filter((item) => item !== null);
+
+        for (const item of newsItems) {
+          try {
+            const exists = await this.newsRepository.findOne({
+              where: { external_id: item.external_id },
+            });
+
+            if (!exists && item.link) {
+              const { content, rawHtml, imageUrls } = await this.getNewsContent(item.link, item.title);
+              
+              try {
+                const isUtility = this.isUtilityNews(item.title);
+                console.log(isUtility);
+                const { text: shortenedContent, wasShortened } = await this.getShortenedText(
+                  isUtility ? rawHtml : content,
+                  isUtility
+                );
+
+                const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
+                const finalContent = shortenedContent + aiNote + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '');
+
+                await this.newsRepository.save({
+                  ...item,
+                  content: finalContent,
+                });
+
+                this.logger.log(`Сохранена историческая новость: ${item.title}`);
+
+              } catch (saveError: any) {
+                if (saveError?.driverError?.code !== '23505') {
+                  throw saveError;
+                }
+                this.logger.debug(
+                  `Новость с external_id ${item.external_id} уже существует`,
+                );
+              }
+            }
+          } catch (itemError) {
+            this.logger.error(
+              `Ошибка при обработке исторической новости ${item.external_id}:`,
+              itemError,
+            );
+          }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+      } catch (error) {
+        this.logger.error(`Ошибка при обработке страницы ${page}:`, error);
+      }
+    }
+    
+    this.logger.log('Сбор исторических новостей завершен');
   }
 }
