@@ -12,6 +12,7 @@ import { BackupService } from '../backup/backup.service';
 export class NewsService {
   private readonly logger = new Logger(NewsService.name);
   private readonly SUMMARY_API_URL = process.env.SUMMARY_API_URL;
+  private readonly FORMAT_API_URL = process.env.FORMAT_API_URL;
   private readonly MAX_TELEGRAM_LENGTH = 1024;
 
   constructor(
@@ -22,6 +23,9 @@ export class NewsService {
   ) {
     if (!this.SUMMARY_API_URL) {
       this.logger.warn('SUMMARY_API_URL не задан в конфигурации');
+    }
+    if (!this.FORMAT_API_URL) {
+      this.logger.warn('FORMAT_API_URL не задан в конфигурации');
     }
   }
 
@@ -42,17 +46,48 @@ export class NewsService {
       .replace(/<div>\s*<\/div>/g, '')
       .replace(/<div>\s*<br>\s*<\/div>/g, '<br>');
 
-    return cleanHtml
+    const jsonSafeHtml = cleanHtml
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
       .replace(/\n/g, '\\n')
       .replace(/\r/g, '\\r')
       .replace(/\t/g, '\\t')
       .replace(/\f/g, '\\f');
+
+    return jsonSafeHtml;
   }
 
-  private async getShortenedText(text: string, isHtml: boolean = false): Promise<{ text: string; wasShortened: boolean }> {
-    if (!this.SUMMARY_API_URL || !isHtml) {
+  private async formatHtmlContent(html: string): Promise<string> {
+    if (!this.FORMAT_API_URL) {
+      return html;
+    }
+
+    try {
+      console.log(`🔄 Отправка запроса на API форматирования: ${this.FORMAT_API_URL}`);
+      console.log('Исходный HTML для подготовки: ', html);
+      const jsonText = this.prepareHtmlForJson(html);
+      console.log('Подготовленный HTML: ', jsonText);
+      const response = await axios.post(this.FORMAT_API_URL, {
+        text: jsonText
+      });
+      
+      console.log('📥 Ответ от API форматирования:', response.data);
+      
+      if (response.data && response.data.summary) {
+        console.log('✅ Получен отформатированный текст от API');
+        return response.data.summary;
+      }
+      
+      console.log('⚠️ API форматирования не вернула отформатированный текст в поле summary');
+      return html;
+    } catch (error) {
+      this.logger.error('Ошибка при форматировании HTML:', error);
+      return html;
+    }
+  }
+
+  private async getShortenedText(text: string): Promise<{ text: string; wasShortened: boolean }> {
+    if (!this.SUMMARY_API_URL) {
       return {
         text: text.length > this.MAX_TELEGRAM_LENGTH ? 
           text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...' : 
@@ -61,28 +96,36 @@ export class NewsService {
       };
     }
 
+    if (text.length <= this.MAX_TELEGRAM_LENGTH) {
+      return {
+        text: text,
+        wasShortened: false
+      };
+    }
+
     try {
-      const jsonText = this.prepareHtmlForJson(text);
-      console.log(jsonText);
+      console.log(`📝 Отправка запроса на API сокращения: ${this.SUMMARY_API_URL}`);
       const response = await axios.post(this.SUMMARY_API_URL, {
-        text: jsonText
+        text: text
       });
       
       if (response.data && response.data.summary) {
+        console.log('✅ Получен сокращенный текст от API');
         return { 
           text: response.data.summary,
           wasShortened: true 
         };
       }
       
+      console.log('⚠️ API сокращения не вернула сокращенный текст');
       return { 
-        text: text,
+        text: text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...',
         wasShortened: false 
       };
     } catch (error) {
       this.logger.error('Ошибка при сокращении текста:', error);
       return { 
-        text: text,
+        text: text.substring(0, this.MAX_TELEGRAM_LENGTH - 3) + '...',
         wasShortened: false 
       };
     }
@@ -159,12 +202,18 @@ export class NewsService {
         .filter(link => link);
 
       const isUtility = this.isUtilityNews(title);
-      const content = isUtility ? description.text() : this.formatRegularContent(description);
-      const rawHtml = isUtility ? description.html() : content;
+      let content: string;
+      let rawHtml = description.html() || '';
+
+      if (isUtility) {
+        content = await this.formatHtmlContent(rawHtml);
+      } else {
+        content = this.formatRegularContent(description);
+      }
 
       return {
         content,
-        rawHtml: rawHtml || '',
+        rawHtml,
         imageUrls
       };
     } catch (error) {
@@ -227,24 +276,33 @@ export class NewsService {
             const { content, rawHtml, imageUrls } = await this.getNewsContent(item.link, item.title);
             
             try {
+              const category = this.determineCategory(item.title);
+              const isUtility = this.isUtilityNews(item.title);
+
+              let processedContent: string;
+              let wasShortened = false;
+
+              if (isUtility) {
+                processedContent = content;
+              } else if (content.length > this.MAX_TELEGRAM_LENGTH) {
+                const shortened = await this.getShortenedText(content);
+                processedContent = shortened.text;
+                wasShortened = shortened.wasShortened;
+              } else {
+                processedContent = content;
+              }
+
               const news = await this.newsRepository.save({
                 ...item,
-                content: content + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : ''),
+                content: processedContent + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : ''),
               });
 
               await this.backupService.createBackup();
 
-              const category = this.determineCategory(item.title);
-              const isUtility = this.isUtilityNews(item.title);
-
-              const { text: shortenedContent, wasShortened } = await this.getShortenedText(
-                isUtility ? rawHtml : content,
-                isUtility
-              );
-
               const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
               const imagesSection = imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '';
-              const message = `🔔 Новая новость!\n\n${item.title}\n\n${shortenedContent}${aiNote}${imagesSection}\n\n📎 Новость на оф.сайте: ${item.link}`;
+              
+              const message = `🔔 Новая новость!\n\n${item.title}\n\n${processedContent}${aiNote}${imagesSection}\n\n📎 Новость на оф.сайте: ${item.link}`;
 
               this.logger.log(`Отправка новости "${item.title}" подписчикам. Категория: ${category}`);
               
@@ -349,14 +407,21 @@ export class NewsService {
               
               try {
                 const isUtility = this.isUtilityNews(item.title);
-                console.log(isUtility);
-                const { text: shortenedContent, wasShortened } = await this.getShortenedText(
-                  isUtility ? rawHtml : content,
-                  isUtility
-                );
+                
+                let processedContent: string;
+                let wasShortened = false;
 
-                const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
-                const finalContent = shortenedContent + aiNote + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '');
+                if (isUtility) {
+                  processedContent = content;
+                } else if (content.length > this.MAX_TELEGRAM_LENGTH) {
+                  const shortened = await this.getShortenedText(content);
+                  processedContent = shortened.text;
+                  wasShortened = shortened.wasShortened;
+                } else {
+                  processedContent = content;
+                }
+
+                const finalContent = processedContent + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '');
 
                 await this.newsRepository.save({
                   ...item,
