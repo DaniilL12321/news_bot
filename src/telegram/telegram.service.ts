@@ -617,8 +617,9 @@ export class TelegramService {
     imageUrls: string[],
     category: string = 'other',
     newsId?: number,
-  ): Promise<void> {
+  ): Promise<{ sentCount: number; totalSubscribers: number }> {
     const subscribers = await this.subscriberRepository.find();
+    let sentCount = 0;
 
     for (const subscriber of subscribers) {
       try {
@@ -655,10 +656,16 @@ export class TelegramService {
             await this.bot.telegram.sendMessage(subscriber.telegram_id, '🔽 Реакции:', keyboard);
           }
         }
+        sentCount++;
       } catch (error) {
         this.logger.error(`Ошибка при отправке сообщения в чат ${subscriber.telegram_id}:`, error);
       }
     }
+
+    return {
+      sentCount,
+      totalSubscribers: subscribers.length
+    };
   }
 
   determineCategory(title: string): string {

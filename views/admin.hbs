@@ -88,7 +88,6 @@
 
             <div id="status" class="mt-4 hidden">
                 <div class="success hidden text-green-600 dark:text-green-400 p-4 bg-green-50 dark:bg-green-900/20 rounded-md">
-                    Сообщение успешно отправлено!
                 </div>
                 <div class="error hidden text-red-600 dark:text-red-400 p-4 bg-red-50 dark:bg-red-900/20 rounded-md">
                 </div>
@@ -145,6 +144,8 @@
                     throw new Error('Ошибка при отправке сообщения');
                 }
 
+                const result = await response.json();
+                successEl.textContent = `Сообщение успешно отправлено! Доставлено ${result.sentCount} из ${result.totalSubscribers} подписчиков.`;
                 successEl.classList.remove('hidden');
                 document.getElementById('messageForm').reset();
             } catch (error) {

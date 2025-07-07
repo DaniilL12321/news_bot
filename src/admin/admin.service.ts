@@ -10,10 +10,11 @@ export class AdminService {
     category?: string,
     imageUrls: string[] = []
   ) {
-    return await this.telegramService.notifySubscribersWithMedia(
+    const result = await this.telegramService.notifySubscribersWithMedia(
       message,
       imageUrls,
       category
     );
+    return result;
   }
 } 
