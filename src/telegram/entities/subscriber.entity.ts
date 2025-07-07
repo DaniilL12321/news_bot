@@ -11,14 +11,14 @@ export class Subscriber {
   @Column('text', { array: true, default: [] })
   categories: string[];
 
-  @Column({ nullable: true })
-  address: string;
+  @Column({ type: 'text', nullable: true })
+  address: string | null;
 
-  @Column({ type: 'float', nullable: true })
-  latitude: number;
+  @Column({ type: 'float8', nullable: true })
+  latitude: number | null;
 
-  @Column({ type: 'float', nullable: true })
-  longitude: number;
+  @Column({ type: 'float8', nullable: true })
+  longitude: number | null;
 
   @Column({ type: 'boolean', default: false })
   waitingForAddress: boolean;

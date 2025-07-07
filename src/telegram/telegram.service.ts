@@ -127,6 +127,22 @@ export class TelegramService {
     ];
   }
 
+  private getLocationButtons(hasAddress: boolean) {
+    const buttons = [
+      [
+        Markup.button.callback('📍 Отправить геолокацию', 'send_location'),
+        Markup.button.callback('✏️ Ввести адрес', 'enter_address'),
+      ],
+    ];
+
+    if (hasAddress) {
+      buttons.push([Markup.button.callback('🗑 Удалить текущий адрес', 'delete_location')]);
+    }
+
+    buttons.push([Markup.button.callback('« Назад в меню', 'back_to_menu')]);
+    return buttons;
+  }
+
   private async getLocationSettingsText(telegram_id: number): Promise<string> {
     const subscriber = await this.subscriberRepository.findOne({
       where: { telegram_id },
@@ -145,6 +161,10 @@ export class TelegramService {
             '• Отправить геолокацию - поделитесь своим текущим местоположением\n' +
             '• Ввести адрес - укажите адрес вручную (например: "ул. Ленина, 10")';
 
+    if (subscriber?.address) {
+      text += '\n\nИли нажмите кнопку "Удалить", чтобы удалить текущий адрес';
+    }
+
     return text;
   }
 
@@ -155,21 +175,15 @@ export class TelegramService {
 
     const subscribedCategories = subscriber?.categories || [];
 
-    return Object.entries(this.categories).map(([key, name]) => {
+    const buttons = Object.entries(this.categories).map(([key, name]) => {
       const isSubscribed = subscribedCategories.includes(key);
       const emoji = isSubscribed ? '✅' : '❌';
       return Markup.button.callback(`${emoji} ${name}`, `toggle_${key}`);
     });
-  }
 
-  private getLocationButtons() {
-    return [
-      [
-        Markup.button.callback('📍 Отправить геолокацию', 'send_location'),
-        Markup.button.callback('✏️ Ввести адрес', 'enter_address'),
-      ],
-      [Markup.button.callback('« Назад в меню', 'back_to_menu')],
-    ];
+    buttons.push(Markup.button.callback('« Назад в меню', 'back_to_menu'));
+
+    return buttons;
   }
 
   private async getReactionButtons(newsId: number, userId: number) {
@@ -303,10 +317,15 @@ export class TelegramService {
     });
 
     this.bot.action('location_settings', async (ctx) => {
+      const telegram_id = ctx.from.id;
+      const subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+      
       const text = await this.getLocationSettingsText(ctx.from.id);
       await ctx.editMessageText(
         text,
-        Markup.inlineKeyboard(this.getLocationButtons())
+        Markup.inlineKeyboard(this.getLocationButtons(!!subscriber?.address))
       );
     });
 
@@ -356,6 +375,30 @@ export class TelegramService {
         '🔔 Меню управления подписками',
         Markup.inlineKeyboard(this.getMainMenuButtons())
       );
+    });
+
+    this.bot.action('delete_location', async (ctx) => {
+      const telegram_id = ctx.from.id;
+      const subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+
+      if (subscriber) {
+        subscriber.address = null;
+        subscriber.latitude = null;
+        subscriber.longitude = null;
+        await this.subscriberRepository.save(subscriber);
+
+        await ctx.answerCbQuery('🗑 Адрес успешно удален');
+        
+        const text = await this.getLocationSettingsText(telegram_id);
+        await ctx.editMessageText(
+          text,
+          Markup.inlineKeyboard(this.getLocationButtons(false))
+        );
+      } else {
+        await ctx.answerCbQuery('❌ Ошибка: адрес не найден');
+      }
     });
 
     this.bot.on('location', async (ctx) => {
@@ -467,10 +510,10 @@ export class TelegramService {
         await this.subscriberRepository.save(subscriber);
       }
 
-      const buttons = await this.getCategoryButtons(telegram_id);
-      await ctx.editMessageReplyMarkup(
-        Markup.inlineKeyboard(buttons, { columns: 1 }).reply_markup,
-      );
+      const newButtons = await this.getCategoryButtons(telegram_id);
+      await ctx.editMessageReplyMarkup({
+        inline_keyboard: [newButtons],
+      });
     });
 
     this.bot.command('about', async (ctx) => {
@@ -507,11 +550,66 @@ export class TelegramService {
     const normalizedNews = newsText.toLowerCase();
     const normalizedAddress = subscriberAddress.toLowerCase();
     
-    const addressParts = normalizedAddress.split(/[,\s]+/);
+    this.logger.debug(`Проверка релевантности новости для адреса: ${subscriberAddress}`);
+    this.logger.debug(`Текст новости: ${newsText}`);
     
-    return addressParts.some(part => 
-      part.length > 3 && normalizedNews.includes(part)
-    );
+    const addressComponents = normalizedAddress
+      .replace(/\s+/g, ' ')
+      .replace(/^ул\.?\s*/i, '')
+      .replace(/^улица\s*/i, '')
+      .split(/[,\s]+/)
+      .filter(part => part.length > 0);
+
+    this.logger.debug(`Компоненты адреса: ${JSON.stringify(addressComponents)}`);
+    
+    const streetVariants: string[] = [];
+    if (addressComponents.length >= 1) {
+      const streetName = addressComponents[0];
+      streetVariants.push(
+        streetName,
+        `ул. ${streetName}`,
+        `улица ${streetName}`,
+        `ул.${streetName}`,
+        `улица${streetName}`
+      );
+    }
+
+    this.logger.debug(`Варианты написания улицы: ${JSON.stringify(streetVariants)}`);
+
+    const hasStreetMatch = streetVariants.some(variant => {
+      const matches = normalizedNews.includes(variant.toLowerCase());
+      if (matches) {
+        this.logger.debug(`Найдено совпадение улицы: ${variant}`);
+      }
+      return matches;
+    });
+
+    if (addressComponents.length >= 2) {
+      const houseNumber = addressComponents[1];
+      this.logger.debug(`Проверка номера дома: ${houseNumber}`);
+      
+      if (hasStreetMatch && normalizedNews.includes(houseNumber)) {
+        this.logger.debug('Найдено точное совпадение номера дома');
+        return true;
+      }
+      const houseNum = parseInt(houseNumber);
+      if (hasStreetMatch && !isNaN(houseNum)) {
+        const rangeMatches = normalizedNews.match(/дома?\s+(\d+)[-,\s]+(\d+)/g);
+        if (rangeMatches) {
+          this.logger.debug(`Найдены диапазоны домов: ${JSON.stringify(rangeMatches)}`);
+          for (const match of rangeMatches) {
+            const [start, end] = match.match(/\d+/g)!.map(Number);
+            if (houseNum >= start && houseNum <= end) {
+              this.logger.debug(`Номер дома ${houseNum} входит в диапазон ${start}-${end}`);
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    this.logger.debug(`Результат проверки: ${hasStreetMatch ? 'найдена улица' : 'совпадений не найдено'}`);
+    return hasStreetMatch;
   }
 
   async notifySubscribersWithMedia(
@@ -528,8 +626,9 @@ export class TelegramService {
           continue;
         }
 
-        if (subscriber.address && !this.isNewsRelevantToLocation(text, subscriber.address)) {
-          continue;
+        let notificationText = text;
+        if (subscriber.address && this.isNewsRelevantToLocation(text, subscriber.address)) {
+          notificationText = `📍 Новость по вашему адресу:\n\n${text}`;
         }
 
         const reactionButtons = newsId ? await this.getReactionButtons(newsId, subscriber.telegram_id) : [];
@@ -538,17 +637,17 @@ export class TelegramService {
           {};
 
         if (imageUrls.length === 0) {
-          await this.bot.telegram.sendMessage(subscriber.telegram_id, text, keyboard);
+          await this.bot.telegram.sendMessage(subscriber.telegram_id, notificationText, keyboard);
         } else if (imageUrls.length === 1) {
           await this.bot.telegram.sendPhoto(subscriber.telegram_id, imageUrls[0], {
-            caption: text,
+            caption: notificationText,
             ...keyboard,
           });
         } else {
           const media: InputMediaPhoto[] = imageUrls.map((url, index) => ({
             type: 'photo',
             media: url,
-            caption: index === 0 ? text : undefined,
+            caption: index === 0 ? notificationText : undefined,
           }));
 
           const message = await this.bot.telegram.sendMediaGroup(subscriber.telegram_id, media);
