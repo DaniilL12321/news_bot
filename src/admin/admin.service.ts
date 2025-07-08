@@ -46,7 +46,7 @@ export class AdminService {
         external_id,
         title: message.split('\n')[0] || 'Сообщение из админ-панели',
         content: message + (imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : ''),
-        link: process.env.ADMIN_PANEL_URL || 'https://admin.example.com', // Замените на реальный URL админ-панели
+        link: process.env.ADMIN_PANEL_URL || 'http://localhost:3000',
         date: new Date(),
       });
       newsId = news.id;
