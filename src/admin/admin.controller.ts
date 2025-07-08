@@ -18,11 +18,13 @@ export class AdminController {
     message: string;
     category?: string;
     imageUrls?: string[];
+    saveToDatabase?: boolean;
   }) {
     return await this.adminService.sendCustomMessage(
       messageData.message,
       messageData.category,
-      messageData.imageUrls
+      messageData.imageUrls,
+      messageData.saveToDatabase
     );
   }
 } 

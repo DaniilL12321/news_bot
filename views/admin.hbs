@@ -78,6 +78,17 @@
                     ></textarea>
                 </div>
 
+                <div class="flex items-center">
+                    <input
+                        type="checkbox"
+                        id="saveToDatabase"
+                        class="h-4 w-4 text-blue-500 focus:ring-blue-500 border-gray-300 rounded"
+                    >
+                    <label for="saveToDatabase" class="ml-2 block text-sm text-gray-700 dark:text-gray-300">
+                        Сохранить в базу данных
+                    </label>
+                </div>
+
                 <button 
                     type="submit"
                     class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:ring-offset-dark-200 transition-colors duration-200"
@@ -125,6 +136,7 @@
                 .split('\n')
                 .map(url => url.trim())
                 .filter(url => url);
+            const saveToDatabase = document.getElementById('saveToDatabase').checked;
 
             try {
                 const response = await fetch('/admin/send-message', {
@@ -136,7 +148,8 @@
                     body: JSON.stringify({
                         message,
                         category: category || undefined,
-                        imageUrls
+                        imageUrls,
+                        saveToDatabase
                     })
                 });
 
@@ -145,7 +158,7 @@
                 }
 
                 const result = await response.json();
-                successEl.textContent = `Сообщение успешно отправлено! Доставлено ${result.sentCount} из ${result.totalSubscribers} подписчиков.`;
+                successEl.textContent = `Сообщение успешно ${saveToDatabase ? 'сохранено и ' : ''}отправлено! Доставлено ${result.sentCount} из ${result.totalSubscribers} подписчиков.`;
                 successEl.classList.remove('hidden');
                 document.getElementById('messageForm').reset();
             } catch (error) {
