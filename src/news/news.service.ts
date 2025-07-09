@@ -300,9 +300,7 @@ export class NewsService {
               await this.backupService.createBackup();
 
               const aiNote = wasShortened ? '\n\n💡 Текст сокращён нейросетью' : '';
-              const imagesSection = imageUrls.length > 0 ? '\n\n📷 Изображения:\n' + imageUrls.join('\n') : '';
-              
-              const message = `🔔 Новая новость!\n\n${item.title}\n\n${processedContent}${aiNote}${imagesSection}\n\n📎 Новость на оф.сайте: ${item.link}`;
+              const message = `🔔 Новая новость!\n\n${item.title}\n\n${processedContent}${aiNote}\n\n📎 Новость на оф.сайте: ${item.link}`;
 
               this.logger.log(`Отправка новости "${item.title}" подписчикам. Категория: ${category}`);
               
