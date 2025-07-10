@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { NewsModule } from './news/news.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { AdminModule } from './admin/admin.module';
+import { AuthModule } from './auth/auth.module';
 import { BackupService } from './backup/backup.service';
 
 @Module({
@@ -30,6 +31,7 @@ import { BackupService } from './backup/backup.service';
     NewsModule,
     TelegramModule,
     AdminModule,
+    AuthModule,
   ],
   providers: [
     BackupService,

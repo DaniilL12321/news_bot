@@ -26,14 +26,22 @@
     <div class="container mx-auto px-4 py-8">
         <div class="flex justify-between items-center mb-8">
             <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Панель управления рассылкой</h1>
-            <button 
-                id="themeToggle"
-                class="p-2 rounded-lg bg-gray-200 dark:bg-dark-200 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-dark-300 transition-colors duration-200"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                </svg>
-            </button>
+            <div class="flex items-center gap-4">
+                <button 
+                    id="themeToggle"
+                    class="p-2 rounded-lg bg-gray-200 dark:bg-dark-200 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-dark-300 transition-colors duration-200"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                </button>
+                <button 
+                    id="logoutBtn"
+                    class="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors duration-200"
+                >
+                    Выйти
+                </button>
+            </div>
         </div>
         
         <div class="bg-white dark:bg-dark-200 rounded-lg shadow p-6">
@@ -107,6 +115,11 @@
     </div>
 
     <script>
+        const accessToken = localStorage.getItem('access_token');
+        if (!accessToken) {
+            window.location.href = '/auth/login';
+        }
+
         const theme = localStorage.getItem('theme') || 'dark';
         document.documentElement.className = theme;
 
@@ -118,6 +131,39 @@
             html.className = newTheme;
             localStorage.setItem('theme', newTheme);
         });
+
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            try {
+                await fetch('/auth/logout', { method: 'POST' });
+                localStorage.removeItem('access_token');
+                window.location.href = '/auth/login';
+            } catch (error) {
+                console.error('Ошибка при выходе:', error);
+            }
+        });
+
+        async function handleAuthError(response) {
+            if (response.status === 401) {
+                try {
+                    const refreshResponse = await fetch('/auth/refresh', {
+                        method: 'POST',
+                        credentials: 'include'
+                    });
+
+                    if (refreshResponse.ok) {
+                        const { access_token } = await refreshResponse.json();
+                        localStorage.setItem('access_token', access_token);
+                        return true;
+                    }
+                } catch (error) {
+                    console.error('Ошибка при обновлении токена:', error);
+                }
+                
+                window.location.href = '/auth/login';
+                return false;
+            }
+            return true;
+        }
 
         document.getElementById('messageForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -139,11 +185,11 @@
             const saveToDatabase = document.getElementById('saveToDatabase').checked;
 
             try {
-                const response = await fetch('/admin/send-message', {
+                let response = await fetch('/admin/send-message', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Admin-Token': new URLSearchParams(window.location.search).get('token')
+                        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
                     },
                     body: JSON.stringify({
                         message,
@@ -154,7 +200,25 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error('Ошибка при отправке сообщения');
+                    if (await handleAuthError(response)) {
+                        response = await fetch('/admin/send-message', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                            },
+                            body: JSON.stringify({
+                                message,
+                                category: category || undefined,
+                                imageUrls,
+                                saveToDatabase
+                            })
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('Ошибка при отправке сообщения');
+                        }
+                    }
                 }
 
                 const result = await response.json();
@@ -162,10 +226,36 @@
                 successEl.classList.remove('hidden');
                 document.getElementById('messageForm').reset();
             } catch (error) {
+                console.error('Ошибка:', error);
                 errorEl.textContent = error.message;
                 errorEl.classList.remove('hidden');
             }
         });
+
+        async function refreshToken() {
+            try {
+                const response = await fetch('/auth/refresh', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    const { access_token } = await response.json();
+                    localStorage.setItem('access_token', access_token);
+                    return true;
+                }
+                return false;
+            } catch {
+                return false;
+            }
+        }
+
+        setInterval(async () => {
+            const success = await refreshToken();
+            if (!success) {
+                window.location.href = '/auth/login';
+            }
+        }, 14 * 60 * 1000);
     </script>
 </body>
 </html> 
