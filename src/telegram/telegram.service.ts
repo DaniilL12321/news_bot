@@ -288,14 +288,28 @@ export class TelegramService {
 
   private initializeBot() {
     this.bot.command('start', async (ctx) => {
+      const telegram_id = ctx.from.id;
+      
+      let subscriber = await this.subscriberRepository.findOne({
+        where: { telegram_id },
+      });
+
+      if (!subscriber) {
+        subscriber = await this.subscriberRepository.save({
+          telegram_id,
+          categories: Object.keys(this.categories),
+        });
+      }
+
       const welcomeMessage =
         '👋 Добро пожаловать в бота новостей города Нерехта!\n\n' +
-        'Этот бот будет присылать вам уведомления о новых новостях с официального сайта администрации\n\n' +
+        'Этот бот будет присылать вам уведомления о новых новостях с официального сайта\n\n' +
         'Доступные команды:\n' +
         '• /subscribe - Управление подписками\n' +
         '• /about - Информация о боте\n\n' +
         'Разработчик: @danya_lobanov\n' +
-        'Исходный код: https://github.com/DaniilL12321/news_bot';
+        'Исходный код: https://github.com/DaniilL12321/news_bot\n\n' +
+        '✅ Вы автоматически подписаны на все категории новостей. Используйте /subscribe для управления подписками.';
 
       await ctx.reply(welcomeMessage);
     });
